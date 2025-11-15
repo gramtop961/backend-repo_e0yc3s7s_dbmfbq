@@ -1,8 +1,12 @@
-import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import Post, Message, Product
+
+app = FastAPI(title="Mauch Garten Hilzingen API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,60 +16,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+@app.get("/")
+async def root():
+    return {"message": "Mauch Garten Hilzingen API running"}
+
 
 @app.get("/test")
-def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
-        "backend": "✅ Running",
-        "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
-        "connection_status": "Not Connected",
-        "collections": []
-    }
-    
+async def test():
     try:
-        # Try to import database module
-        from database import db
-        
-        if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
-            try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
-            except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
-        else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+        # Attempt a ping by listing collections
+        collections = await db().list_collection_names()
+        return {
+            "backend": "fastapi",
+            "database": "mongodb",
+            "database_url": "env://DATABASE_URL",
+            "database_name": "env://DATABASE_NAME",
+            "connection_status": "ok",
+            "collections": collections,
+        }
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
-    return response
+        return {
+            "backend": "fastapi",
+            "database": "mongodb",
+            "connection_status": f"error: {e}",
+        }
 
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+# Basic endpoints for content used by the site
+
+@app.get("/products", response_model=List[Product])
+async def list_products(category: Optional[str] = None):
+    filter_dict = {"category": category} if category else {}
+    items = await get_documents("product", filter_dict, limit=100)
+    return items
+
+
+class ContactPayload(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    subject: Optional[str] = None
+    message: str
+
+
+@app.post("/contact")
+async def submit_contact(payload: ContactPayload):
+    saved = await create_document("message", payload.model_dump())
+    return {"status": "received", "id": saved.get("_id")}
+
+
+@app.get("/posts", response_model=List[Post])
+async def list_posts(tag: Optional[str] = None):
+    filter_dict = {"tags": tag} if tag else {}
+    items = await get_documents("post", filter_dict, limit=50)
+    return items
